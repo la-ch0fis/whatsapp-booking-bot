@@ -1,0 +1,9 @@
+# NEVER commit these — credentials and local junk
+token.json
+samconfig.toml
+.venv/
+__pycache__/
+*.pyc
+.aws-sam/
+reminders.log
+.env

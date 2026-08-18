@@ -1,0 +1,153 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  WhatsApp booking bot (Reiki/Biomagnetism). Webhook + sweeper + reminders.
+  Bookings live in Google Calendar (single source of truth); DynamoDB only
+  holds transient conversation state (~90 s lifespan) and webhook dedup.
+  Secrets (WhatsApp token, App Secret, Google token) live in SSM SecureString
+  parameters and are fetched at runtime — never in CFN parameters or env vars.
+
+Parameters:
+  PhoneNumberId:
+    Type: String
+    Description: Business phone number ID from Meta (not secret)
+  VerifyToken:
+    Type: String
+    NoEcho: true
+    Description: Any string you invent for the webhook handshake
+  WhatsAppTokenSsmParam:
+    Type: String
+    Default: /wa-bot/whatsapp-token
+    Description: SSM SecureString holding the permanent Meta System User token
+  AppSecretSsmParam:
+    Type: String
+    Default: /wa-bot/app-secret
+    Description: SSM SecureString holding the Meta App Secret (webhook signatures)
+  GoogleTokenSsmParam:
+    Type: String
+    Default: /wa-bot/google-token
+    Description: SSM SecureString holding the CONTENT of token.json
+
+Globals:
+  Function:
+    Runtime: python3.12
+    MemorySize: 256
+    Timeout: 20
+    Environment:
+      Variables:
+        TABLE_NAME: !Ref StateTable
+        PHONE_NUMBER_ID: !Ref PhoneNumberId
+        VERIFY_TOKEN: !Ref VerifyToken
+        WHATSAPP_TOKEN_SSM: !Ref WhatsAppTokenSsmParam
+        APP_SECRET_SSM: !Ref AppSecretSsmParam
+        GOOGLE_TOKEN_SSM: !Ref GoogleTokenSsmParam
+
+Resources:
+  # Explicit HTTP API so we can throttle: a flood of junk requests gets
+  # rate-limited at the gateway before it ever costs a Lambda invocation.
+  Api:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 20
+        ThrottlingRateLimit: 10
+
+  StateTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST   # on-demand billing; ~$0 at this volume
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+
+  WebhookFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: lambda_handler.handler
+      CodeUri: .
+      Description: Receives Meta webhooks and runs the state machine
+      Events:
+        WebhookGet:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Api
+            Path: /webhook
+            Method: GET
+        WebhookPost:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref Api
+            Path: /webhook
+            Method: POST
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref StateTable
+        - SSMParameterReadPolicy:
+            ParameterName: wa-bot/*
+
+  SweeperFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: sweeper.lambda_handler
+      CodeUri: .
+      Description: Expires idle conversations (>90 s) and notifies the user
+      Events:
+        EveryMinute:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 minute)
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref StateTable
+        - SSMParameterReadPolicy:
+            ParameterName: wa-bot/*
+
+  RemindersFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: reminders.lambda_handler
+      CodeUri: .
+      Timeout: 60
+      Description: Reminders ~24h before each session (approved template)
+      Events:
+        EveryHalfHour:
+          Type: Schedule
+          Properties:
+            Schedule: rate(30 minutes)
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref StateTable
+        - SSMParameterReadPolicy:
+            ParameterName: wa-bot/*
+
+  # Explicit log groups with retention: default is keep-forever, which is
+  # both a slow cost leak and customer message content sitting in logs
+  # indefinitely. 30 days is plenty for debugging.
+  WebhookLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${WebhookFunction}
+      RetentionInDays: 30
+  SweeperLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${SweeperFunction}
+      RetentionInDays: 30
+  RemindersLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${RemindersFunction}
+      RetentionInDays: 30
+
+Outputs:
+  WebhookUrl:
+    Description: Paste this URL into Meta webhook configuration
+    Value: !Sub "https://${Api}.execute-api.${AWS::Region}.amazonaws.com/webhook"
+  TableName:
+    Value: !Ref StateTable
