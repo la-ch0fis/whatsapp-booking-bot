@@ -20,7 +20,7 @@ import messages as M
 import whatsapp_api as wa
 import calendar_utils as cal
 import parsing_utils as par
-from config import TZ, CONVERSATION_TIMEOUT_SECONDS, TIMEOUT_SWEEP_INTERVAL
+from config import TZ, CONVERSATION_TIMEOUT_SECONDS, TIMEOUT_SWEEP_INTERVAL, MAX_JUNK_STRIKES
 
 logging.basicConfig(
     level=logging.INFO,
@@ -29,6 +29,16 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 VERIFY_TOKEN = os.environ["VERIFY_TOKEN"]
+
+# Parse failures that count as "playing around". Real-world limits.
+# (past, Sunday, holiday, lunch, outsie hours) are NOT junk.
+JUNK_ERRORS = {
+    par.ERR_JUNK,
+    par.ERR_NO_TIME_MARKER,
+    par.ERR_INVALID_DATE,
+    par.ERR_MISSING_PARTS,
+    par.ERR_UNPARSEABLE
+}
 
 
 def _norm_cmd(text: str) -> str:
@@ -98,7 +108,7 @@ def _dispatch(msg: dict):
 
 BOOK_COMMANDS = {"agendar", "agenda", "cita", "reservar", "reserva", "sesion"}
 CANCEL_COMMANDS = {"cancelar", "cancela", "cancelacion"}
-GREETINGS = {"hola", "buenas", "buenos dias", "buenas tardes", "buenas noches", "hi", "hey"}
+GREETINGS = {"hola", "buenas", "buenos dias", "buenas tardes", "buenas noches", "hi", "hey", "sup", "que tranza"}
 
 
 def _handle_text(wa_id: str, text: str):
@@ -133,10 +143,22 @@ def _handle_text(wa_id: str, text: str):
 def _handle_datetime(wa_id: str, data: dict, text: str):
     dt, err = par.parse_and_validate(text)
     if err:
+        if err and JUNK_ERRORS:
+            strikes = int(data.get("junk_strikes", 0)) + 1
+        else:
+            strikes = 0 # a sensible request (e.g. a Sunday) is not junk
+        if strikes >= MAX_JUNK_STRIKES:
+            state.clear(wa_id)
+            wa.send_text(wa_id, M.TOO_MANY_JUNK)
+            log.info("Conversation closed after %d junk inputs: %s", strikes, wa_id)
+            return
+        data["junk_strikes"] = strikes
         # SPECIFIC message per failure reason; user stays in ASK_DATETIME
         state.touch(wa_id, "ASK_DATETIME", data)
         wa.send_text(wa_id, M.PARSE_ERRORS[err])
         return
+    
+    data.pop("junk_strikes", None)
 
     try:
         if cal.is_slot_free(dt):

@@ -84,6 +84,11 @@ TIMEOUT = (
     "Escribe *agendar* o *cancelar* cuando quieras retomarlo."
 )
 
+TOO_MANY_JUNK = (
+    "Por favor deja de jugar, si no te interesa reservar en este momento," 
+    "intenta más tarde. Saludos!"
+)
+
 CANCEL_NONE = "No encontré citas futuras a tu nombre 🤷 No hay nada que cancelar."
 
 CANCEL_PICK = "Estas son tus próximas citas. ¿Cuál quieres cancelar?"

@@ -2,8 +2,12 @@
 token.json
 samconfig.toml
 .venv/
+.venv.old
 __pycache__/
 *.pyc
 .aws-sam/
 reminders.log
 .env
+credentials.json
+token.json
+token.json.old

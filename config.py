@@ -33,6 +33,7 @@ HOLIDAYS = {
 # --- Conversation ---
 CONVERSATION_TIMEOUT_SECONDS = 90   # inactivity before an in-progress flow is cancelled
 TIMEOUT_SWEEP_INTERVAL = 15         # local sweeper thread check interval (seconds)
+MAX_JUNK_STRIKES = 3                # consecutive junk inputs in ASK_DATETIME before the chat is closed
 
 # --- Google Calendar ---
 CALENDAR_ID = "primary"
